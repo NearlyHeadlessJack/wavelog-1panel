@@ -1,0 +1,96 @@
+name: Build and Push Docker Image
+
+on:
+  workflow_dispatch:  # 允许手动触发
+    inputs:
+      wavelog_version:
+        description: 'Wavelog version to build (e.g., 2.2.1)'
+        required: true
+        default: '2.2.1'
+  push:
+    tags:
+      - 'v*'  # 当推送v开头的标签时自动触发
+
+env:
+  DOCKER_USERNAME: nearlyheadlessjack
+  REPOSITORY_NAME: wavelog-1panel
+  WAVELOG_REPO: wavelog/wavelog
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Set up QEMU (for multi-arch if needed)
+      uses: docker/setup-qemu-action@v3
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+    
+    - name: Determine Wavelog version
+      id: set_version
+      run: |
+        # 如果是标签触发，从标签名获取版本
+        if [[ "${{ github.event_name }}" == "push" ]]; then
+          VERSION=${GITHUB_REF#refs/tags/v}
+        else
+          # 如果是手动触发，使用输入参数
+          VERSION="${{ github.event.inputs.wavelog_version }}"
+        fi
+        echo "WAVELOG_VERSION=${VERSION}" >> $GITHUB_OUTPUT
+        echo "Using Wavelog version: ${VERSION}"
+    
+    - name: Download Wavelog source code
+      run: |
+        VERSION="${{ steps.set_version.outputs.WAVELOG_VERSION }}"
+        DOWNLOAD_URL="https://github.com/${{ env.WAVELOG_REPO }}/archive/refs/tags/${VERSION}.tar.gz"
+        
+        echo "Downloading Wavelog from: ${DOWNLOAD_URL}"
+        
+        # 下载并解压
+        curl -L -o wavelog-${VERSION}.tar.gz ${DOWNLOAD_URL}
+        tar -xzf wavelog-${VERSION}.tar.gz
+        
+        # 创建构建目录并移动文件
+        mkdir -p build
+        mv wavelog-${VERSION}/* build/
+        
+        # 复制Dockerfile和entrypoint.sh到构建目录
+        cp Dockerfile build/
+        cp entrypoint.sh build/
+        
+        # 检查文件是否存在
+        echo "Build directory contents:"
+        ls -la build/
+    
+    - name: Build Docker image
+      run: |
+        VERSION="${{ steps.set_version.outputs.WAVELOG_VERSION }}"
+        cd build
+        
+        # 构建镜像
+        docker build \
+          --tag ${{ env.DOCKER_USERNAME }}/${{ env.REPOSITORY_NAME }}:${VERSION} \
+          --tag ${{ env.DOCKER_USERNAME }}/${{ env.REPOSITORY_NAME }}:latest \
+          .
+    
+    - name: Push Docker image
+      run: |
+        VERSION="${{ steps.set_version.outputs.WAVELOG_VERSION }}"
+        
+        # 推送指定版本标签
+        docker push ${{ env.DOCKER_USERNAME }}/${{ env.REPOSITORY_NAME }}:${VERSION}
+        
+        # 推送latest标签
+        docker push ${{ env.DOCKER_USERNAME }}/${{ env.REPOSITORY_NAME }}:latest
